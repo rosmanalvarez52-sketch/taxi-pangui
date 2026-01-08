@@ -9,6 +9,11 @@ dist/
 web-build/
 expo-env.d.ts
 
+# Expo export (a veces queda como carpeta de salida)
+# Si tú quieres subir dist/ porque Vercel lo genera en build, está bien ignorarlo igual.
+# (Vercel construye el dist en el deploy, no necesitas versionarlo)
+# dist/ ya está arriba
+
 # Native
 .kotlin/
 *.orig.*
@@ -30,14 +35,20 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (MUY IMPORTANTE)
+.env
+.env.*
 .env*.local
 
 # typescript
 *.tsbuildinfo
 
-app-example
+# example folder
+app-example/
 
 # generated native folders
 /ios
 /android
+
+# Vercel local folder
+.vercel/

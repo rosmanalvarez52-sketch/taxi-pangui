@@ -12,7 +12,7 @@ let pollTimer = null;
 
 // throttle para no escribir excesivo
 let lastWriteMs = 0;
-const MIN_WRITE_MS = 1200; // 1.2s (más fluido)
+const MIN_WRITE_MS = 1200; // 1.2s
 
 // lock simple para evitar escrituras en paralelo
 let writing = false;
@@ -57,9 +57,7 @@ function sleep(ms) {
 }
 
 /**
- * ✅ IMPORTANTE:
- * Antes: si estaba dentro del throttle, hacía return y PERDÍA la ubicación.
- * Ahora: devuelve { shouldWaitMs } para que la cola espere y luego escriba.
+ * Escribe (respetando throttle). Devuelve { wrote, shouldWaitMs }
  */
 async function writeDriverLocationNow({ uid, rideId, latitude, longitude }) {
   const now = Date.now();
@@ -100,7 +98,7 @@ async function writeDriverLocationNow({ uid, rideId, latitude, longitude }) {
 
 /**
  * Cola: siempre conserva el ÚLTIMO punto.
- * Si cae dentro del throttle, espera y reintenta (no lo pierde).
+ * Si cae dentro del throttle, espera y reintenta.
  */
 async function writeDriverLocationQueued(payload) {
   pendingPoint = payload;
@@ -114,15 +112,11 @@ async function writeDriverLocationQueued(payload) {
 
       const r = await writeDriverLocationNow(p);
 
-      // Si el throttle dijo "espera", esperamos y reintentamos con el último punto conocido
       if (!r.wrote && r.shouldWaitMs > 0) {
-        // durante esta espera puede entrar un pendingPoint nuevo; al final del sleep se usa el último
         await sleep(r.shouldWaitMs);
 
-        // si durante el sleep NO llegó un pendingPoint nuevo, re-usamos el mismo p
-        if (!pendingPoint) {
-          pendingPoint = p;
-        }
+        // Si no llegó otro punto durante el sleep, re-usamos el mismo
+        if (!pendingPoint) pendingPoint = p;
       }
     }
   } finally {
@@ -146,10 +140,29 @@ async function safeGetCurrentPosition() {
   }
 }
 
+/**
+ * Fuerza un punto actual inmediato.
+ */
+async function forceFreshPointNow(uid) {
+  const p = await safeGetCurrentPosition();
+  if (!p) return false;
+
+  try {
+    await writeDriverLocationQueued({
+      uid,
+      rideId: activeRideId,
+      latitude: p.latitude,
+      longitude: p.longitude,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function startFallbackPolling(uid) {
   stopFallbackPolling();
 
-  // Cada 5s forzamos un getCurrentPosition por si watchPosition “se duerme”
   pollTimer = setInterval(async () => {
     if (!uid) return;
     const p = await safeGetCurrentPosition();
@@ -162,9 +175,6 @@ function startFallbackPolling(uid) {
         latitude: p.latitude,
         longitude: p.longitude,
       });
-      console.log(
-        `🛰️ Poll -> (${p.latitude.toFixed(5)}, ${p.longitude.toFixed(5)}) rideId=${activeRideId || 'null'}`
-      );
     } catch (_) {}
   }, 5000);
 }
@@ -176,6 +186,9 @@ function stopFallbackPolling() {
   }
 }
 
+/**
+ * Inicia ubicación en vivo del CHOFER (si rideId cambia, forzamos envío inmediato)
+ */
 export async function startDriverLiveLocation(rideId = null) {
   const user = auth.currentUser;
   if (!user) {
@@ -183,11 +196,16 @@ export async function startDriverLiveLocation(rideId = null) {
     return;
   }
 
-  // Siempre actualiza ride activo
   activeRideId = rideId || null;
 
   const ok = await requestLocationPermissions();
   if (!ok) return;
+
+  // al cambiar rideId, reseteamos throttle para enviar YA
+  lastWriteMs = 0;
+
+  // siempre fuerza primer punto actual
+  await forceFreshPointNow(user.uid);
 
   // Si ya existe watcher, solo actualiza metadatos y sigue
   if (locationSubscription) {
@@ -203,7 +221,6 @@ export async function startDriverLiveLocation(rideId = null) {
         },
         { merge: true }
       );
-      console.log('🔁 LiveLocation ya activo: rideId actualizado a', activeRideId);
     } catch (e) {
       console.warn('⚠️ No se pudo actualizar rideId:', e?.message);
     }
@@ -213,26 +230,13 @@ export async function startDriverLiveLocation(rideId = null) {
   }
 
   try {
-    // Primer envío inmediato
-    const first = await safeGetCurrentPosition();
-    if (first) {
-      await writeDriverLocationQueued({
-        uid: user.uid,
-        rideId: activeRideId,
-        latitude: first.latitude,
-        longitude: first.longitude,
-      });
-      console.log('📌 Primer envío ubicación OK');
-    }
-
     const options = {
       accuracy:
         Platform.OS === 'android'
           ? Location.Accuracy.BestForNavigation
           : Location.Accuracy.High,
-
       timeInterval: 2000,
-      distanceInterval: 0, // fuerza callbacks (lo controlamos con throttle + cola)
+      distanceInterval: 0,
       mayShowUserSettingsDialog: true,
     };
 
@@ -254,43 +258,27 @@ export async function startDriverLiveLocation(rideId = null) {
           latitude,
           longitude,
         });
-
-        console.log(
-          `📍 Watch -> (${latitude.toFixed(5)}, ${longitude.toFixed(5)}) rideId=${activeRideId || 'null'}`
-        );
       } catch (e) {
         console.warn('⚠️ Error guardando liveLocation:', e?.message);
       }
     });
 
-    // Fallback polling ON
     startFallbackPolling(user.uid);
 
-    // ✅ AppState listener único (sin duplicar)
     if (!appStateSub) {
       appStateSub = AppState.addEventListener('change', async (st) => {
         if (st === 'active') {
-          const p = await safeGetCurrentPosition();
-          if (!p) return;
-          try {
-            await writeDriverLocationQueued({
-              uid: user.uid,
-              rideId: activeRideId,
-              latitude: p.latitude,
-              longitude: p.longitude,
-            });
-          } catch (_) {}
+          lastWriteMs = 0;
+          await forceFreshPointNow(user.uid);
         }
       });
     }
-
-    console.log('✅ LiveLocation iniciado uid=', user.uid, 'rideId=', activeRideId);
   } catch (e) {
     console.warn('⚠️ No se pudo iniciar LiveLocation:', e?.message);
   }
 }
 
-export function stopDriverLiveLocation() {
+export async function stopDriverLiveLocation() {
   activeRideId = null;
 
   stopFallbackPolling();
@@ -300,27 +288,65 @@ export function stopDriverLiveLocation() {
       locationSubscription.remove();
     } catch (_) {}
     locationSubscription = null;
-    console.log('⏹ LiveLocation detenido');
   }
 
-  // ✅ limpiar AppState listener
   if (appStateSub) {
     try {
       appStateSub.remove();
     } catch (_) {}
     appStateSub = null;
   }
+
+  // marcar isDriving false al detener
+  try {
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      const liveRef = doc(db, 'liveLocations', uid);
+      await setDoc(
+        liveRef,
+        { rideId: null, isDriving: false, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    }
+  } catch (_) {}
 }
 
-/** ✅ Necesario para PassengerHome.js (y para debug) */
-export function subscribeToDriverLocation(driverUid, callback) {
-  if (!driverUid) {
-    console.warn('subscribeToDriverLocation: driverUid no proporcionado');
+/**
+ * ✅ NUEVO: Pasajero escribe SU ubicación en liveLocations/{uid} (sin tocar rides)
+ * Esto NO depende de reglas de rides, solo liveLocations.
+ */
+export async function writeMyLiveLocation({ rideId = null, isDriving = false, lat, lng }) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return;
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+  const liveRef = doc(db, 'liveLocations', uid);
+  await setDoc(
+    liveRef,
+    {
+      uid,
+      rideId: rideId || null,
+      lat,
+      lng,
+      isDriving: !!isDriving, // para el pasajero será false, pero lo dejamos genérico
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+}
+
+/**
+ * ✅ NUEVO: Escuchar ubicación en vivo de CUALQUIER usuario (driver o pasajero)
+ */
+export function subscribeToLiveLocation(userUid, callback) {
+  if (!userUid) {
+    console.warn('subscribeToLiveLocation: userUid no proporcionado');
     callback(null);
     return () => {};
   }
 
-  const ref = doc(db, 'liveLocations', driverUid);
+  const ref = doc(db, 'liveLocations', userUid);
 
   const unsub = onSnapshot(
     ref,
@@ -333,6 +359,7 @@ export function subscribeToDriverLocation(driverUid, callback) {
           lng: data.lng,
           rideId: data.rideId || null,
           updatedAt: data.updatedAt || null,
+          isDriving: !!data.isDriving,
         });
       }
     },
@@ -343,4 +370,9 @@ export function subscribeToDriverLocation(driverUid, callback) {
   );
 
   return unsub;
+}
+
+/** Compatibilidad con código existente */
+export function subscribeToDriverLocation(driverUid, callback) {
+  return subscribeToLiveLocation(driverUid, callback);
 }

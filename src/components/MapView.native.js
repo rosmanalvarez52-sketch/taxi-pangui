@@ -2,7 +2,6 @@
 import React, { forwardRef } from 'react';
 import RNMapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 
-// ✅ Exportar también Marker y Polyline para que los imports nombrados funcionen
 export { Marker, Polyline, PROVIDER_GOOGLE };
 
 function toNum(v) {
@@ -21,109 +20,97 @@ function hasLatLng(p) {
 }
 
 function getMarkerColor(status) {
-  switch (status) {
+  switch ((status || '').toLowerCase()) {
     case 'open':
     case 'searching':
       return '#FF9800';
     case 'assigned':
+    case 'in_progress':
       return '#4CAF50';
     default:
       return '#607D8B';
   }
 }
 
-// ✅ IMPORTANTE: forwardRef para que el padre (RideLive) pueda animar la cámara
+const DARK_MAP_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#242f3e' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#746855' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#38414e' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#17263c' }] },
+];
+
 const MapViewNative = forwardRef(function MapViewNative(
-  { style, initialRegion, region, rides = [], children, ...rest },
+  { style, initialRegion, region, rides = [], children, mapStyleVariant = 'light', ...rest },
   ref
 ) {
+  const customMapStyle = mapStyleVariant === 'dark' ? DARK_MAP_STYLE : null;
+
   return (
     <RNMapView
       ref={ref}
       style={style}
       provider={PROVIDER_GOOGLE}
       initialRegion={initialRegion}
-      // ✅ si en algún momento decides usar region controlado
       region={region}
+      customMapStyle={customMapStyle}
       {...rest}
     >
-      {/* ✅ Si el padre renderiza markers propios (RideLive), se respetan */}
       {children}
 
-      {/* ✅ Renders por "rides" (AssignRide / listas) */}
       {Array.isArray(rides) &&
         rides.map((ride) => {
           const { origin, destination, status, route } = ride;
           const color = getMarkerColor(status || 'open');
 
-          // ✅ Taxi (driverLocation) - lo que faltaba para ver movimiento en AssignRide
           const driverLoc = ride?.driverLocation || ride?.driver?.location || null;
-
-          // ✅ Opcional: pasajero (si algún día envías passengerLocation)
           const passengerLoc = ride?.passengerLocation || null;
 
           return (
             <React.Fragment key={ride.id}>
-              {/* Origen */}
               {hasLatLng(origin) && (
                 <Marker
-                  coordinate={{
-                    latitude: toNum(origin.lat),
-                    longitude: toNum(origin.lng),
-                  }}
+                  coordinate={{ latitude: toNum(origin.lat), longitude: toNum(origin.lng) }}
                   title={`Origen (${status || 'open'})`}
                   description={`ID: ${ride.id}`}
                   pinColor={color}
                 />
               )}
 
-              {/* Destino */}
               {hasLatLng(destination) && (
                 <Marker
-                  coordinate={{
-                    latitude: toNum(destination.lat),
-                    longitude: toNum(destination.lng),
-                  }}
+                  coordinate={{ latitude: toNum(destination.lat), longitude: toNum(destination.lng) }}
                   title="Destino"
                   pinColor="black"
                 />
               )}
 
-              {/* ✅ Taxi */}
               {hasLatLng(driverLoc) && (
                 <Marker
-                  coordinate={{
-                    latitude: toNum(driverLoc.lat),
-                    longitude: toNum(driverLoc.lng),
-                  }}
+                  coordinate={{ latitude: toNum(driverLoc.lat), longitude: toNum(driverLoc.lng) }}
                   title="Taxi"
                   description="Conductor en movimiento"
                   pinColor="#1877f2"
                 />
               )}
 
-              {/* (Opcional) Pasajero */}
               {hasLatLng(passengerLoc) && (
                 <Marker
-                  coordinate={{
-                    latitude: toNum(passengerLoc.lat),
-                    longitude: toNum(passengerLoc.lng),
-                  }}
+                  coordinate={{ latitude: toNum(passengerLoc.lat), longitude: toNum(passengerLoc.lng) }}
                   title="Pasajero"
                   description="Ubicación actual"
                   pinColor="green"
                 />
               )}
 
-              {/* Ruta */}
-              {Array.isArray(route?.coords) && route.coords.length > 0 && (
+              {Array.isArray(route?.coords) && route.coords.length > 1 && (
                 <Polyline
                   coordinates={route.coords.map((p) => ({
                     latitude: p.latitude,
                     longitude: p.longitude,
                   }))}
                   strokeWidth={4}
-                  strokeColor={status === 'assigned' ? '#4CAF50' : '#FF9800'}
+                  strokeColor={(status || '').toLowerCase() === 'assigned' ? '#4CAF50' : '#FF9800'}
                 />
               )}
             </React.Fragment>

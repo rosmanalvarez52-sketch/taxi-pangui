@@ -2,7 +2,7 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import DriverHome from '../screens/DriverHome';
-import RideLive from '../screens/RideLive'; // 👈 añadimos la pantalla de viaje en vivo
+import RideLive from '../screens/RideLive';
 
 const Stack = createNativeStackNavigator();
 
@@ -16,14 +16,12 @@ export default function DriverStack() {
         headerTitleStyle: { fontWeight: 'bold' },
       }}
     >
-      {/* Pantalla principal del conductor */}
       <Stack.Screen
         name="DriverHome"
         component={DriverHome}
         options={{ title: 'Solicitudes Cercanas' }}
       />
 
-      {/* Nueva pantalla para el seguimiento del viaje */}
       <Stack.Screen
         name="RideLive"
         component={RideLive}

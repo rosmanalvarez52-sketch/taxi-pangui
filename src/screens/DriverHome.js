@@ -1,30 +1,22 @@
 // src/screens/DriverHome.js
 import React, { useEffect, useRef, useState } from 'react';
-import { View, FlatList, Button, Text, Alert, ActivityIndicator } from 'react-native';
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-  runTransaction,
-  doc,
-  limit,
-} from 'firebase/firestore';
+import { View, FlatList, Button, Text, Alert, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { collection, onSnapshot, query, where, runTransaction, doc, limit } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../lib/firebase';
-
-// ✅ IMPORTANTE: iniciar tracking del chofer
 import { startDriverLiveLocation } from '../lib/liveLocation';
 
-export default function DriverHome() {
+const DRIVER_ACTIVE_STATUSES = ['assigned', 'in_progress', 'finished']; // ✅ assigned es el importante
+
+export default function DriverHome({ navigation }) {
   const [rides, setRides] = useState([]);
   const [uid, setUid] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
 
-  // Evitar re-lanzar startDriverLiveLocation repetidamente
+  const [myActiveRide, setMyActiveRide] = useState(null);
+
   const lastStartedRideIdRef = useRef(null);
 
-  // 1) Esperar a que haya sesión
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, (u) => {
       setUid(u?.uid ?? null);
@@ -33,7 +25,7 @@ export default function DriverHome() {
     return () => unsubAuth();
   }, []);
 
-  // 2) Suscribirse a solicitudes abiertas (para lista)
+  // Lista de solicitudes abiertas
   useEffect(() => {
     if (!uid) return;
 
@@ -47,27 +39,52 @@ export default function DriverHome() {
     return () => unsub();
   }, [uid]);
 
-  // ✅ 3) Mantener tracking activo si el chofer tiene una carrera asignada
-  // (esto corrige el caso donde el chofer vuelve a abrir la app/pantalla y no se reinicia el tracking)
+  // ✅ Detectar carrera activa del chofer para “volver a ingresar”
   useEffect(() => {
     if (!uid) return;
 
-    const qMineAssigned = query(
+    const qMineActive = query(
       collection(db, 'rides'),
-      where('status', '==', 'assigned'),
       where('driverId', '==', uid),
+      where('status', 'in', DRIVER_ACTIVE_STATUSES),
       limit(1)
     );
 
     const unsub = onSnapshot(
-      qMineAssigned,
+      qMineActive,
+      (snap) => {
+        if (snap.empty) {
+          setMyActiveRide(null);
+          return;
+        }
+        const d = snap.docs[0];
+        setMyActiveRide({ id: d.id, ...d.data() });
+      },
+      (err) => console.log('SNAP my active ERROR >>', err.code, err.message)
+    );
+
+    return () => unsub();
+  }, [uid]);
+
+  // Mantener tracking activo si tiene carrera assigned/in_progress
+  useEffect(() => {
+    if (!uid) return;
+
+    const qMineForTracking = query(
+      collection(db, 'rides'),
+      where('driverId', '==', uid),
+      where('status', 'in', ['assigned', 'in_progress']),
+      limit(1)
+    );
+
+    const unsub = onSnapshot(
+      qMineForTracking,
       async (snap) => {
         if (snap.empty) return;
 
         const d = snap.docs[0];
         const rideId = d.id;
 
-        // Evitar loops
         if (lastStartedRideIdRef.current === rideId) return;
 
         try {
@@ -78,17 +95,22 @@ export default function DriverHome() {
           console.log('⚠️ No se pudo iniciar tracking en DriverHome:', e?.message);
         }
       },
-      (err) => console.log('SNAP my assigned ERROR >>', err.code, err.message)
+      (err) => console.log('SNAP my tracking ERROR >>', err.code, err.message)
     );
 
     return () => unsub();
   }, [uid]);
 
-  // 4) Aceptar viaje con transacción + iniciar tracking
   const acceptRide = async (rideId) => {
     try {
       if (!uid) {
         Alert.alert('Sesión requerida', 'Inicia sesión como conductor para aceptar un viaje.');
+        return;
+      }
+
+      // Si ya tiene carrera, no permitir tomar otra
+      if (myActiveRide?.id) {
+        Alert.alert('No disponible', 'Ya tienes una carrera activa.');
         return;
       }
 
@@ -98,13 +120,11 @@ export default function DriverHome() {
 
         if (!snap.exists()) throw new Error('La solicitud ya no existe.');
         const ride = snap.data();
-        if (ride.status !== 'open') throw new Error('La solicitud ya fue tomada.');
+        if ((ride.status || '').toLowerCase() !== 'open') throw new Error('La solicitud ya fue tomada.');
 
-        // Reglas esperan driverId y cambio de estado open -> assigned
         tx.update(ref, { status: 'assigned', driverId: uid });
       });
 
-      // ✅ CLAVE: arrancar ubicación en vivo del chofer para este rideId
       try {
         lastStartedRideIdRef.current = rideId;
         await startDriverLiveLocation(rideId);
@@ -128,16 +148,34 @@ export default function DriverHome() {
 
   return (
     <View style={{ flex: 1, padding: 12 }}>
+      {/* ✅ Volver a la carrera */}
+      {myActiveRide?.id ? (
+        <View style={{ padding: 12, borderWidth: 1, borderColor: '#ddd', borderRadius: 12, marginBottom: 12 }}>
+          <Text style={{ fontWeight: '900', marginBottom: 6 }}>Tienes una carrera activa</Text>
+          <Text style={{ marginBottom: 8 }}>Estado: {myActiveRide.status}</Text>
+
+          <TouchableOpacity
+            style={{ backgroundColor: '#1877f2', padding: 12, borderRadius: 10 }}
+            onPress={() => navigation.navigate('RideLive', { rideId: myActiveRide.id })}
+            activeOpacity={0.85}
+          >
+            <Text style={{ color: 'white', textAlign: 'center', fontWeight: '900' }}>
+              Volver a mi carrera
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       <FlatList
         data={rides}
         keyExtractor={(i) => i.id}
         renderItem={({ item }) => (
           <View style={{ padding: 12, borderBottomWidth: 1, gap: 4 }}>
-            <Text>Oferta: ${item.offer}</Text>
+            <Text style={{ fontWeight: '700' }}>Solicitud: {item.id}</Text>
             <Text>
               Origen: {item.origin?.lat?.toFixed?.(4)}, {item.origin?.lng?.toFixed?.(4)}
             </Text>
-            <Button title="Aceptar" onPress={() => acceptRide(item.id)} disabled={!uid} />
+            <Button title="Aceptar" onPress={() => acceptRide(item.id)} disabled={!uid || !!myActiveRide} />
           </View>
         )}
         ListEmptyComponent={<Text>No hay solicitudes abiertas.</Text>}

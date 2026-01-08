@@ -9,6 +9,7 @@ import {
   Alert,
   TouchableOpacity,
   ScrollView,
+  StyleSheet,
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { auth, db } from '../../lib/firebase';
@@ -17,7 +18,7 @@ import {
   getDoc,
   updateDoc,
   serverTimestamp,
-  onSnapshot, // ✅
+  onSnapshot,
 } from 'firebase/firestore';
 import { goToAppStart } from '../../lib/goHome';
 
@@ -33,7 +34,6 @@ import { startDriverLiveLocation } from '../../lib/liveLocation';
 function isNumber(n) {
   return typeof n === 'number' && Number.isFinite(n);
 }
-
 function toNumber(v) {
   if (isNumber(v)) return v;
   if (typeof v === 'string' && v.trim() !== '') {
@@ -42,18 +42,15 @@ function toNumber(v) {
   }
   return null;
 }
-
 function hasLatLng(p) {
   const lat = toNumber(p?.lat);
   const lng = toNumber(p?.lng);
   return lat !== null && lng !== null;
 }
-
 function normStr(v) {
   const s = typeof v === 'string' ? v.trim() : '';
   return s.length ? s : null;
 }
-
 function normStatus(v) {
   return typeof v === 'string' ? v.trim().toLowerCase() : '';
 }
@@ -71,6 +68,9 @@ export default function AssignRide() {
 
   // ✅ Ruta calculada para mostrar en el mapa (si el ride no trae route)
   const [localRoute, setLocalRoute] = useState(null); // { coords, distanceKm, durationMin }
+
+  // ✅ UX: collapse de detalles cuando ya está asignada
+  const [showDetails, setShowDetails] = useState(false);
 
   /** ✅ 1) SUSCRIPCIÓN EN TIEMPO REAL A rides/{rideId}  */
   useEffect(() => {
@@ -106,7 +106,7 @@ export default function AssignRide() {
           }
         } catch (_) {}
 
-        // ✅ Escucha live del ride (esto es lo que habilita el movimiento en tiempo real)
+        // ✅ Escucha live del ride
         const rideRef = doc(db, 'rides', rideId);
         unsub = onSnapshot(
           rideRef,
@@ -237,7 +237,7 @@ export default function AssignRide() {
     };
   }, [ride]);
 
-  /** ✅ Datos para MapView con "rides" (AHORA incluye driverLocation en vivo) */
+  /** ✅ Datos para MapView con "rides" (incluye driverLocation en vivo) */
   const ridesForMap = useMemo(() => {
     if (!ride) return [];
     if (!isAssigned) return [];
@@ -261,11 +261,7 @@ export default function AssignRide() {
         origin: ride.origin,
         destination: ride.destination,
         route: routeToUse,
-
-        // ✅ CLAVE: esto permite que MapView.web dibuje el taxi en tiempo real
         driverLocation: ride.driverLocation || null,
-
-        // (opcional si más adelante guardas passengerLocation en rides)
         passengerLocation: ride.passengerLocation || null,
       },
     ];
@@ -399,7 +395,7 @@ export default function AssignRide() {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+      <View style={styles.center}>
         <ActivityIndicator size="large" />
         <Text>Cargando solicitud…</Text>
       </View>
@@ -408,12 +404,110 @@ export default function AssignRide() {
 
   if (!ride) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+      <View style={styles.center}>
         <Text>No se encontró la solicitud.</Text>
       </View>
     );
   }
 
+  // ✅ UX: modo limpio cuando está asignada
+  if (isAssigned) {
+    return (
+      <View style={styles.root}>
+        {/* Header compacto */}
+        <View style={styles.assignedHeader}>
+          <Text style={styles.title}>Carrera en curso</Text>
+
+          <Text style={styles.metaLine}>
+            <Text style={styles.metaBold}>Pasajero:</Text> {passengerInfo.name}{' '}
+            <Text style={styles.metaMuted}>·</Text>{' '}
+            <Text style={styles.metaBold}>Tel:</Text> {passengerInfo.phone}
+          </Text>
+
+          <Text style={styles.metaLine}>
+            <Text style={styles.metaBold}>Distancia:</Text> {dist}{' '}
+            <Text style={styles.metaMuted}>·</Text>{' '}
+            <Text style={styles.metaBold}>Precio:</Text> {price}
+          </Text>
+
+          {/* Detalles opcionales (collapse) */}
+          <TouchableOpacity
+            onPress={() => setShowDetails((v) => !v)}
+            style={styles.detailsToggle}
+          >
+            <Text style={styles.detailsToggleText}>
+              {showDetails ? 'Ocultar detalles' : 'Ver detalles'}
+            </Text>
+          </TouchableOpacity>
+
+          {showDetails && (
+            <View style={styles.detailsBox}>
+              <Text style={styles.detailsText}>
+                <Text style={styles.metaBold}>ID:</Text> {ride.id}
+              </Text>
+              <Text style={styles.detailsText}>
+                <Text style={styles.metaBold}>Chofer:</Text>{' '}
+                {ride.driverName || ride.driver?.name || '—'}{' '}
+                <Text style={styles.metaMuted}>·</Text>{' '}
+                <Text style={styles.metaBold}>Placa:</Text>{' '}
+                {ride.driverPlate || ride.driver?.plate || '—'}
+              </Text>
+
+              {(localRoute?.distanceKm || localRoute?.durationMin) ? (
+                <Text style={styles.detailsText}>
+                  <Text style={styles.metaBold}>Ruta:</Text>{' '}
+                  {localRoute?.distanceKm != null ? `${localRoute.distanceKm.toFixed(2)} km` : '—'}
+                  {localRoute?.durationMin != null ? ` · ${localRoute.durationMin} min` : ''}
+                </Text>
+              ) : null}
+            </View>
+          )}
+        </View>
+
+        {/* Mapa grande */}
+        <View style={styles.mapBigWrap}>
+          {initialRegion ? (
+            <MapView
+              style={styles.mapBig}
+              provider={PROVIDER_GOOGLE}
+              initialRegion={initialRegion}
+              rides={ridesForMap}
+            />
+          ) : (
+            <View style={styles.center}>
+              <Text>No hay coordenadas para mostrar el mapa.</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Acciones fijas abajo */}
+        <View style={styles.actionsBar}>
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.btnChat]}
+            onPress={() => navigation.navigate('ChatRide', { rideId: ride.id })}
+          >
+            <Text style={styles.actionBtnText}>Abrir chat</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, styles.btnFinish, saving ? { opacity: 0.7 } : null]}
+            onPress={onMarkFinished}
+            disabled={saving}
+          >
+            <Text style={styles.actionBtnText}>
+              {saving ? 'Guardando…' : 'Marcar como completada'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[styles.actionBtn, styles.btnExit]} onPress={() => goToAppStart(navigation)}>
+            <Text style={styles.actionBtnText}>Salir al inicio</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // ✅ Modo normal (ANTES de asignar / open)
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 30 }}>
@@ -472,52 +566,6 @@ export default function AssignRide() {
           </TouchableOpacity>
         )}
 
-        {/* ✅ BOTÓN COMPLETAR */}
-        {isAssigned && (
-          <View style={{ marginBottom: 12 }}>
-            <Button
-              title={saving ? 'Guardando…' : 'Marcar carrera como completada'}
-              color="#4CAF50"
-              onPress={onMarkFinished}
-              disabled={saving}
-            />
-          </View>
-        )}
-
-        {/* ✅ MAPA SOLO CUANDO YA SE ACEPTÓ (assigned) */}
-        {isAssigned && initialRegion && (
-          <View style={{ marginTop: 8, marginBottom: 12 }}>
-            <Text style={{ fontWeight: '700', marginBottom: 6 }}>Ruta de la carrera</Text>
-
-            <View
-              style={{
-                height: 260,
-                borderRadius: 12,
-                overflow: 'hidden',
-                borderWidth: 1,
-                borderColor: '#e6e6e6',
-                backgroundColor: '#fafafa',
-              }}
-            >
-              <MapView
-                style={{ flex: 1 }}
-                provider={PROVIDER_GOOGLE}
-                initialRegion={initialRegion}
-                rides={ridesForMap} // ✅ ahora se actualiza con onSnapshot
-              />
-            </View>
-
-            {(localRoute?.distanceKm || localRoute?.durationMin) && (
-              <Text style={{ marginTop: 8, opacity: 0.75 }}>
-                {localRoute?.distanceKm != null
-                  ? `Distancia ruta: ${localRoute.distanceKm.toFixed(2)} km`
-                  : ''}
-                {localRoute?.durationMin != null ? `  ·  Tiempo estimado: ${localRoute.durationMin} min` : ''}
-              </Text>
-            )}
-          </View>
-        )}
-
         <Text style={{ fontWeight: '700', marginTop: 8, marginBottom: 4 }}>
           Datos del chofer
         </Text>
@@ -553,14 +601,12 @@ export default function AssignRide() {
           title={
             saving
               ? 'Asignando…'
-              : isAssigned
-              ? 'Carrera asignada'
               : isFinished || isCancelled
               ? `Carrera ${ride.status}`
               : 'Aceptar carrera'
           }
           onPress={onAssign}
-          disabled={saving || isFinished || isCancelled || isAssigned}
+          disabled={saving || isFinished || isCancelled}
         />
 
         <TouchableOpacity
@@ -580,3 +626,60 @@ export default function AssignRide() {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#fff' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+  assignedHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  title: { fontSize: 18, fontWeight: '800', marginBottom: 6 },
+  metaLine: { fontSize: 13, marginBottom: 2 },
+  metaBold: { fontWeight: '700' },
+  metaMuted: { opacity: 0.65 },
+
+  detailsToggle: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#f2f4f7',
+  },
+  detailsToggleText: { fontWeight: '800' },
+  detailsBox: {
+    marginTop: 10,
+    backgroundColor: '#f7f7f7',
+    borderRadius: 12,
+    padding: 10,
+  },
+  detailsText: { fontSize: 13, marginBottom: 4 },
+
+  mapBigWrap: { flex: 1, backgroundColor: '#fafafa' },
+  mapBig: { flex: 1 },
+
+  actionsBar: {
+    padding: 12,
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    backgroundColor: '#fff',
+  },
+  actionBtn: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionBtnText: { color: '#fff', fontWeight: '900' },
+
+  btnChat: { backgroundColor: '#1877f2' },
+  btnFinish: { backgroundColor: '#4CAF50' },
+  btnExit: { backgroundColor: '#555' },
+});
