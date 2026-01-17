@@ -7,7 +7,7 @@ export default ({ config }) => ({
 
     name: 'Taxi El Pangui',
     slug: 'taxi-pangui',
-    version: '1.0.1',
+    version: '1.0.2',
     orientation: 'portrait',
 
     icon: './assets/icon.png',
@@ -22,7 +22,7 @@ export default ({ config }) => ({
 
     android: {
       package: 'com.taxi.pangui',
-      versionCode: 2,
+      versionCode: 3,
       permissions: ['ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION'],
       config: {
         googleMaps: {
